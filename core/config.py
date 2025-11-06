@@ -1,10 +1,14 @@
 # core/config.py
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class Settings(BaseSettings):
     APP_NAME: str = "TIARA Engine"
-    TIARA_SYNC_KEY_HEX: str  # Wajib ada di .env
-    LARAVEL_WEBHOOK_URL: str # URL untuk lapor balik ke Laravel
+    TIARA_SYNC_KEY_HEX: str             
+    LARAVEL_WEBHOOK_URL: str            
+    LOG_LEVEL: str = "INFO"             
 
     @property
     def SYNC_KEY_BYTES(self) -> bytes:
@@ -12,5 +16,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+
 
 settings = Settings()
