@@ -9,23 +9,27 @@ from core.config import settings
 # Inisialisasi logger khusus untuk modul ini
 logger = logging.getLogger(__name__)
 
-async def report_status_to_laravel(deployment_id: int, status: str, output_log: str):
+async def report_status_to_laravel(log_id: int, status: str, output_log: str):
     """
     Fungsi bantu untuk mengirim laporan balik ke Laravel via Webhook.
     """
     webhook_url = settings.LARAVEL_WEBHOOK_URL
+    secret_token = settings.TIARA_SYNC_KEY
     payload = {
-        "deployment_id": deployment_id,
+        "log_id": log_id,
         "status": status,          # 'SUCCESS' atau 'FAILED'
         "output_log": output_log,  # Log lengkap untuk debugging di UI Laravel
     }
-
+    headers = {
+        'X-Engine-Secret': secret_token, 
+        'Accept': 'application/json',
+    }
     try:
         async with httpx.AsyncClient() as client:
             # Kirim POST request ke Laravel dengan timeout 10 detik
-            response = await client.post(webhook_url, json=payload, timeout=10.0)
+            response = await client.post(webhook_url, json=payload, headers=headers, timeout=10.0)
             if response.status_code == 200:
-                logger.info(f"Successfully reported status for Deployment {deployment_id}")
+                logger.info(f"Successfully reported status for Deployment {log_id}")
             else:
                 logger.warning(f"Failed to report status to Laravel. Code: {response.status_code}, Body: {response.text}")
     except Exception as e:
@@ -38,7 +42,8 @@ async def run_ssl_deploy_task(payload: Dict[str, Any]):
     """
     # 1. Ekstrak data dari payload
     data = payload.get('data', {})
-    deployment_id = data.get('deployment_id')
+    log_id = payload.get('log_id')
+    domain_name = data.get('domain_name')
     
     # Data Server & Kredensial
     server_ip = data.get('server_ip')
@@ -56,9 +61,11 @@ async def run_ssl_deploy_task(payload: Dict[str, Any]):
     new_cert_content = data.get('new_cert_content')
     new_key_content = data.get('new_key_content')
     new_chain_content = data.get('new_chain_content') # Opsional
+    # logger.DEBUG(f"cer content{new_cert_content}")
+    logger.info(f"cer content{new_cert_content}")
 
-    logger.info(f"[START] SSL Deployment ID: {deployment_id} on {server_ip}")
-    log_buffer = [] # Untuk menampung semua log output
+    logger.info(f"[START] Updating SSL Domain: {domain_name} on {server_ip}")
+    log_buffer = [] 
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -77,40 +84,103 @@ async def run_ssl_deploy_task(payload: Dict[str, Any]):
         # Buka SFTP session untuk transfer file
         sftp = ssh.open_sftp()
 
-        # --- STEP 2: BACKUP FILE LAMA (Opsional tapi Recommended) ---
-        # (Logic backup sederhana: rename file existing jika ada)
+        # --- STEP 2: BACKUP FILE LAMA (PERBAIKAN) ---
         timestamp = "backup_tiara"
         try:
-            sftp.stat(cert_path) # Cek apakah file ada
-            ssh.exec_command(f"cp {cert_path} {cert_path}.{timestamp}")
-            log_buffer.append(f"Backed up old cert to {cert_path}.{timestamp}")
-        except FileNotFoundError:
-            pass # File belum ada, skip backup
+            # 1. Cek apakah file ada.
+            sftp.stat(cert_path) 
+            
+            # 2. Jika ada, jalankan backup DAN TUNGGU SAMPAI SELESAI
+            log_buffer.append(f"File {cert_path} exists. Attempting backup...")
+            backup_cmd = f"cp {cert_path} {cert_path}.{timestamp}"
+            
+            # --- INI CARA MEMBUATNYA MENUNGGU ---
+            stdin, stdout, stderr = ssh.exec_command(backup_cmd)
+            exit_status = stdout.channel.recv_exit_status() # <-- Ini akan 'blocking'
+            
+            if exit_status == 0:
+                log_buffer.append(f"Backed up old cert to {cert_path}.{timestamp}")
+            else:
+                err_str = stderr.read().decode().strip()
+                log_buffer.append(f"WARNING: Failed to backup file (Code {exit_status}). Error: {err_str}. Proceeding anyway...")
 
-        # --- STEP 3: UPLOAD FILE BARU ---
-        logger.info("Uploading new SSL files...")
-        log_buffer.append("Starting file upload...")
+        except (FileNotFoundError, IOError) as e:
+            # 3. PERBAIKAN: Tangkap IOError (spt Permission Denied) dan FileNotFoundError
+            # Jika file tidak ada ATAU tidak bisa diakses, skip backup.
+            log_buffer.append(f"No existing file at {cert_path} or cannot access. Skipping backup.")
+            logger.info(f"No existing file at {cert_path} or cannot access. Skipping backup.")
+            pass # Lanjutkan ke Step 3
 
-        # Upload Cert
-        if new_cert_content:
-            with sftp.open(cert_path, 'w') as f:
-                f.write(new_cert_content)
-            log_buffer.append(f"Uploaded: {cert_path}")
+        # --- STEP 3: UPLOAD FILE BARU (VIA TMP) ---
+        logger.info("Uploading new SSL files to temporary location...")
+        log_buffer.append("Uploading files to /tmp/...")
+
+        # Tentukan lokasi sementara
+        tmp_cert_path = f"/tmp/{domain_name}.crt"
+        tmp_key_path = f"/tmp/{domain_name}.key"
+        tmp_chain_path = f"/tmp/{domain_name}.chain"
+
+        try:
+            # Upload Cert ke /tmp/
+            if new_cert_content:
+                with sftp.open(tmp_cert_path, 'w') as f:
+                    f.write(new_cert_content)
+                log_buffer.append(f"Uploaded cert to {tmp_cert_path}")
+            
+            # Upload Key ke /tmp/
+            if new_key_content:
+                with sftp.open(tmp_key_path, 'w') as f:
+                    f.write(new_key_content)
+                log_buffer.append(f"Uploaded key to {tmp_key_path}")
+
+            # Upload Chain (jika ada) ke /tmp/
+            if chain_path and new_chain_content:
+                with sftp.open(tmp_chain_path, 'w') as f:
+                    f.write(new_chain_content)
+                log_buffer.append(f"Uploaded chain to {tmp_chain_path}")
+
+        except Exception as e:
+            # Gagal upload bahkan ke /tmp/
+            raise Exception(f"Failed to upload to /tmp/ directory. Error: {e}")
+        finally:
+            sftp.close() # Kita tutup sftp di sini
+
+        logger.info("Files uploaded to temp. Moving to final destination...")
+
+        # --- STEP 3.5: PINDAHKAN FILE DARI /tmp/ KE LOKASI ASLI (DENGAN SUDO) ---
         
-        # Upload Key
+        # Buat daftar perintah yang akan dieksekusi
+        move_commands = []
+        if new_cert_content:
+            move_commands.append(f"sudo mv {tmp_cert_path} {cert_path}")
+            move_commands.append(f"sudo chown root:root {cert_path}") # Amankan kepemilikan
+            move_commands.append(f"sudo chmod 644 {cert_path}")       # Amankan izin
+        
         if new_key_content:
-            with sftp.open(key_path, 'w') as f:
-                f.write(new_key_content)
-            log_buffer.append(f"Uploaded: {key_path}")
-
-        # Upload Chain (jika ada)
+            move_commands.append(f"sudo mv {tmp_key_path} {key_path}")
+            move_commands.append(f"sudo chown root:root {key_path}")
+            move_commands.append(f"sudo chmod 600 {key_path}") # Key harus lebih ketat
+        
         if chain_path and new_chain_content:
-            with sftp.open(chain_path, 'w') as f:
-                f.write(new_chain_content)
-            log_buffer.append(f"Uploaded: {chain_path}")
+            move_commands.append(f"sudo mv {tmp_chain_path} {chain_path}")
+            move_commands.append(f"sudo chown root:root {chain_path}")
+            move_commands.append(f"sudo chmod 644 {chain_path}")
 
-        sftp.close()
-        logger.info("All files uploaded successfully.")
+        # Gabungkan semua perintah jadi satu
+        full_move_command = " && ".join(move_commands)
+        
+        if full_move_command:
+            log_buffer.append(f"Executing: {full_move_command}")
+            stdin, stdout, stderr = ssh.exec_command(full_move_command)
+            exit_status = stdout.channel.recv_exit_status() # Tunggu selesai
+            
+            if exit_status != 0:
+                # GAGAL memindahkan file
+                err_str = stderr.read().decode().strip() or stdout.read().decode().strip()
+                raise Exception(f"Failed to move files from /tmp/ (Code {exit_status}). Error: {err_str}")
+
+        logger.info("All files moved successfully.")
+        log_buffer.append("All files moved successfully.")
 
         # --- STEP 4: RESTART WEB SERVER ---
         logger.info(f"Executing restart command: {restart_cmd}")
@@ -128,7 +198,14 @@ async def run_ssl_deploy_task(payload: Dict[str, Any]):
             final_status = "SUCCESS"
         else:
             logger.error(f"Web server restart FAILED. Exit code: {exit_status}")
-            log_buffer.append(f"Restart FAILED (Code {exit_status}). Error: {err_str}")
+            
+            if err_str:
+                log_buffer.append(f"Restart FAILED (Code {exit_status}). Error: {err_str}")
+            elif out_str:
+                log_buffer.append(f"Restart FAILED (Code {exit_status}). Output: {out_str}")
+            else:
+                log_buffer.append(f"Restart FAILED (Code {exit_status}). No output from server.")
+
             final_status = "FAILED"
 
     except Exception as e:
@@ -138,8 +215,8 @@ async def run_ssl_deploy_task(payload: Dict[str, Any]):
     
     finally:
         ssh.close()
-        logger.info(f"[FINISH] Deployment ID {deployment_id} finished with status: {final_status}")
+        logger.info(f"[FINISH] Deployment ID {domain_name} finished with status: {final_status}")
         
         # --- STEP 5: LAPOR BALIK KE LARAVEL ---
         full_log = "\n".join(log_buffer)
-        await report_status_to_laravel(deployment_id, final_status, full_log)
+        await report_status_to_laravel(log_id, final_status, full_log)

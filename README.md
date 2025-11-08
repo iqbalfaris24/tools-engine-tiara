@@ -11,12 +11,12 @@ pip install -r requirements.txt
 ## Dev
 ```
 source venv/bin/activate
-uvicorn api:app --host 0.0.0.0 --port 9090 --reload
+uvicorn main:app --host 0.0.0.0 --port 9090 --reload
 deactivate
 pip freeze > requirements.txt
 ```
 
 ##Staging/Production
 ```
-pm2 start /home/iqbalfaris/python/tools-engine-tiara/venv/bin/python --name "tools-tiara" --interpreter none -- -m uvicorn api:app --host 0.0.0.0 --port 8082
+pm2 start /home/iqbalfaris/python/tools-engine-tiara/venv/bin/python --name "tools-tiara" --interpreter none -- -m uvicorn main:app --host 0.0.0.0 --port 8082
 ```
