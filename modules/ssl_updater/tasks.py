@@ -13,7 +13,7 @@ async def report_status_to_laravel(log_id: int, status: str, output_log: str):
     """
     Fungsi bantu untuk mengirim laporan balik ke Laravel via Webhook.
     """
-    webhook_url = settings.LARAVEL_WEBHOOK_URL
+    webhook_url = settings.TIARA_WEBHOOK_URL
     secret_token = settings.TIARA_SYNC_KEY
     payload = {
         "log_id": log_id,

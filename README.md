@@ -17,12 +17,15 @@ deactivate
 ```
 
 ##Staging/Production
+
 ```bash
-pm2 start /home/iqbalfaris/Documents/python/tools-engine-tiara/venv/bin/python --name "tools-tiara" --interpreter none -- -m uvicorn main:app --host 0.0.0.0 --port 8082
-
 pm2 start /home/iqbalfaris/Documents/python/tools-engine-tiara/venv/bin/python \
-  --name "tools-tiara" \
-  --interpreter none \
-  -- -m uvicorn main:app --host 0.0.0.0 --port 8082 --reload
+--name "tools-tiara" \
+--interpreter none \
+-- -m uvicorn main:app --host 0.0.0.0 --port 8082 --reload
 
+pm2 start /media/iqbalfaris/Data/Programming/Python/tools-engine-tiara/venv/bin/python \
+--name "tools-tiara" \
+--cwd /media/iqbalfaris/Data/Programming/Python/tools-engine-tiara \
+-- -m uvicorn main:app --host 0.0.0.0 --port 9091
 ```

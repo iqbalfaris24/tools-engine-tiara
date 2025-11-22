@@ -8,7 +8,7 @@ load_dotenv()
 class Settings(BaseSettings):
     APP_NAME: str = "TIARA Engine"
     TIARA_SYNC_KEY: str
-    LARAVEL_WEBHOOK_URL: str
+    TIARA_WEBHOOK_URL: str
     LOG_LEVEL: str = "INFO"
 
     @property
