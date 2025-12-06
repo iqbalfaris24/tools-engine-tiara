@@ -1,11 +1,11 @@
 # modules/__init__.py
 from .ssl_updater.tasks import run_ssl_deploy_task
-# from .data_migrator.tasks import run_migration_task # Nanti tinggal uncomment
+from .deployment_parser.tasks import run_deployment_parse_task 
+# from .data_migrator.tasks import run_migration_task
 
-# Mapping antara 'task_type' dari Laravel dengan fungsi worker Python
 TASK_REGISTRY = {
     'ssl_deploy': run_ssl_deploy_task,
-    # 'migrate_s3': run_migration_task,
+    'deployment_parse': run_deployment_parse_task,
 }
 
 def get_task_handler(task_type: str):
